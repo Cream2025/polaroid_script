@@ -1,6 +1,11 @@
 import json
+import os
 
 from datetime import datetime
+from urllib.parse import urlparse
+
+import requests
+
 from settings import SOCKET_HOST, SOCKET_PORT, POLAROID_ID
 from utils.instax_ble.InstaxBLE import InstaxBLE
 from utils.socket.polaroid_packet_type import PACKET_TYPE
@@ -43,21 +48,20 @@ class PolaroidSocketClient(BaseSocketClient):
             self.instax.get_printer_info()
             self.send_message(PACKET_TYPE.C2K_PRINTER_INFO, PhotoCount=self.instax.photosLeft)
 
-    def print_photo(self, ImageUrl, **kwargs):
-        # TODO 다운로드 image
-        self.log(ImageUrl)
-        image_path = "D:\\workspace\\project\\snapism_belly\\Program\\Hybrid.Kiosk.Web\\bin\\Debug\\net8.0\\Print_Smart\\0_f0_Merged.png"
+    def print_photo(self, ImageUrl, RequestId, **kwargs):
+        image_path = self.download_image(ImageUrl)
 
         if not self.instax.peripheral or not self.instax.peripheral.is_connected():
-            self.instax.connect(10)
+            self.instax.connect(20)
 
         if self.instax.peripheral and self.instax.peripheral.is_connected():
             self.instax.enable_printing()
             self.instax.print_image(image_path)
+            # self.instax.wait_seconds(30)
             self.instax.wait_one_minute() # TODO 이거 어떻게 할지 생각해보자. 상태 관리를 해놓는것도 괜찮을듯
+            self.send_message(PACKET_TYPE.C2K_RES_PRINT_PHOTO, PrintComplete=True, RequestId=RequestId)
         else:
-            # TODO 실패 처리
-            self.log("connection failed")
+            self.send_message(PACKET_TYPE.C2K_RES_PRINT_PHOTO, PrintComplete=False, RequestId=RequestId)
 
 
     def log(self, message):
@@ -80,3 +84,24 @@ class PolaroidSocketClient(BaseSocketClient):
             self.message_func_map[type](**data)
         except Exception as e:
             self.log(str(e))
+
+    def download_image(self, image_file_url):
+        response = requests.get(image_file_url)
+        response.raise_for_status()  # 에러 발생 시 예외
+
+        # 확장자 추출
+        parsed_url = urlparse(image_file_url)
+        path = parsed_url.path
+        ext = os.path.splitext(path)[-1]  # .jpg, .png 등
+
+        # 저장할 파일 이름
+        filename = f"print{ext}"
+        filepath = os.path.join(os.getcwd(), filename)
+
+        # 저장
+        with open(filepath, 'wb') as f:
+            f.write(response.content)
+
+        self.log(f"Image({image_file_url} ) saved as {filepath}")
+
+        return filepath

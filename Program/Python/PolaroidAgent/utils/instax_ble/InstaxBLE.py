@@ -514,6 +514,12 @@ class InstaxBLE:
             print("Waiting for one minute...")
         sleep(60)
 
+    def wait_seconds(self, seconds):
+        """ Wait for one minute. Hacky way of preventing disconnecting too soon """
+        if not self.quiet:
+            print(f"Waiting for {seconds} seconds...")
+        sleep(seconds)
+
 
 def main(args={}):
     """ Example usage of the InstaxBLE class """
