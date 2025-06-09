@@ -97,8 +97,7 @@ class InstaxBLE:
         # self.log(f"event: {event}")
         self.waitingForResponse = False
 
-        print(event)
-        print(packet)
+        print(f"{event}: {packet}")
 
         if event == EventType.XYZ_AXIS_INFO:
             x, y, z, o = unpack_from('<hhhB', packet[6:-1])
@@ -155,6 +154,7 @@ class InstaxBLE:
             self.handle_image_packet_queue()
 
         elif event == EventType.PRINT_IMAGE_DOWNLOAD_CANCEL:
+            self.log('received image dowonload cancel')
             pass
 
         elif event == EventType.PRINT_IMAGE:
@@ -170,6 +170,8 @@ class InstaxBLE:
                 self.log(f"Img packets left to send: {len(self.packetsForPrinting)}")
             packet = self.packetsForPrinting.pop(0)
             self.send_packet(packet)
+        elif self.cancelled:
+            self.log("Couldn't send image packet because it is cancelled.")
 
     def notification_handler(self, packet):
         """ Gets called whenever the printer replies and handles parsing the received data """
@@ -338,9 +340,13 @@ class InstaxBLE:
                 self.log("peripheral not connected")
 
         try:
+            i = 0
+            self.log(f"before sleep {i}")
             while self.waitingForResponse and not self.dummyPrinter and not self.cancelled:
-                # self.log("sleep")
-                sleep(0.05)
+                i += 1
+                self.log(f"sleep {i}")
+                # sleep(0.05)
+                sleep(0.5)
 
             header, length, op1, op2 = unpack_from('>HHBB', packet)
             try:
@@ -367,6 +373,12 @@ class InstaxBLE:
             # sleep(1)
             self.disconnect()
             sys.exit('Cancelled')
+        except Exception as e:
+            self.cancelled = True
+            self.cancel_print()
+            # sleep(1)
+            self.disconnect()
+            self.log(f"raised exception: {e}")
 
     def print_image(self, imgSrc):
         """
