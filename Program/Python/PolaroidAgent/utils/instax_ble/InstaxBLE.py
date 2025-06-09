@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-
+import asyncio
 from math import ceil
 from struct import pack, unpack_from
 from time import sleep
+
+from utils.instax_ble.InstaxJobRunner import JobType
 
 # Try to import Types with a relative import first
 try:
@@ -52,15 +54,13 @@ class InstaxBLE:
         self.deviceAddress = device_address.upper() if device_address else None
         self.image_path = image_path
         self.verbose = verbose if not self.quiet else False
-        self.packetsForPrinting = []
+        self.jobRunner = None
         self.pos = (0, 0, 0, 0)
         self.batteryState = 0
         self.batteryPercentage = 0
         self.photosLeft = 0
         self.isCharging = False
         self.imageSize = (PrinterSettings['mini']['width'], PrinterSettings['mini']['height']) if self.dummyPrinter else (0, 0)
-        self.waitingForResponse = False
-        self.cancelled = False
 
         adapters = simplepyble.Adapter.get_adapters()
         if len(adapters) == 0:
@@ -73,6 +73,9 @@ class InstaxBLE:
             self.log(f"Found multiple adapters: {', '.join([adapter.identifier() for adapter in adapters])}")
             self.log(f"Using the first one: {adapters[0].identifier()}")
         self.adapter = adapters[0]
+
+    def set_job_runner(self, runner):
+        self.jobRunner = runner
 
     def log(self, msg):
         """ Print a debug message"""
@@ -94,9 +97,6 @@ class InstaxBLE:
 
     def parse_printer_response(self, event, packet):
         """ Parse the response packet and print the result """
-        # self.log(f"event: {event}")
-        self.waitingForResponse = False
-
         print(f"{event}: {packet}")
 
         if event == EventType.XYZ_AXIS_INFO:
@@ -105,8 +105,6 @@ class InstaxBLE:
         elif event == EventType.LED_PATTERN_SETTINGS:
             pass
         elif event == EventType.AUTO_SLEEP_SETTINGS:
-            aa = packet[6:-1]
-            print(aa)
             pass
         elif event == EventType.SUPPORT_FUNCTION_INFO:
             try:
@@ -117,8 +115,6 @@ class InstaxBLE:
 
             if infoType == InfoType.IMAGE_SUPPORT_INFO:
                 w, h = unpack_from('>HH', packet[8:12])
-                # self.log(self.prettify_bytearray(packet[8:12]))
-                # self.log(f'image size: {w}x{h}')
                 self.imageSize = (w, h)
                 if (w, h) == (600, 800):
                     self.printerSettings = PrinterSettings['mini']
@@ -133,45 +129,30 @@ class InstaxBLE:
 
             elif infoType == InfoType.BATTERY_INFO:
                 self.batteryState, self.batteryPercentage = unpack_from('>BB', packet[8:10])
-                # self.log(f'battery state: {self.batteryState}, battery percentage: {self.batteryPercentage}')
             elif infoType == InfoType.PRINTER_FUNCTION_INFO:
                 dataByte = packet[8]
                 self.photosLeft = dataByte & 15
                 self.isCharging = (1 << 7) & dataByte >= 1
-                # self.log(f'photos left: {self.photosLeft}')
-                # if self.isCharging:
-                #     self.log('Printer is charging')
-                # else:
-                #     self.log('Printer is running on battery')
 
         elif event == EventType.PRINT_IMAGE_DOWNLOAD_START:
-            self.handle_image_packet_queue()
+            pass
 
         elif event == EventType.PRINT_IMAGE_DOWNLOAD_DATA:
-            self.handle_image_packet_queue()
+            pass
 
         elif event == EventType.PRINT_IMAGE_DOWNLOAD_END:
-            self.handle_image_packet_queue()
+            pass
 
         elif event == EventType.PRINT_IMAGE_DOWNLOAD_CANCEL:
-            self.log('received image dowonload cancel')
             pass
 
         elif event == EventType.PRINT_IMAGE:
-            self.log('received print confirmation')
             pass
 
         else:
             self.log(f'Uncaught response from printer. Eventype: {event}')
 
-    def handle_image_packet_queue(self):
-        if len(self.packetsForPrinting) > 0 and not self.cancelled:
-            if len(self.packetsForPrinting) % 10 == 0:
-                self.log(f"Img packets left to send: {len(self.packetsForPrinting)}")
-            packet = self.packetsForPrinting.pop(0)
-            self.send_packet(packet)
-        elif self.cancelled:
-            self.log("Couldn't send image packet because it is cancelled.")
+        self.jobRunner.on_packet_processed()
 
     def notification_handler(self, packet):
         """ Gets called whenever the printer replies and handles parsing the received data """
@@ -200,7 +181,7 @@ class InstaxBLE:
 
         self.parse_printer_response(event, packet)
 
-    def connect(self, timeout=0):
+    async def connect(self, timeout=0):
         """ Connect to the printer. Stops trying after <timeout> seconds. """
         if self.dummyPrinter:
             return
@@ -226,8 +207,8 @@ class InstaxBLE:
                         self.log(f'Error on attaching notification_handler: {e}')
                         return
 
-                self.get_printer_info()
-                sleep(1)
+                await self.get_printer_info()
+                await asyncio.sleep(1)
                 self.display_current_status()
 
     def disconnect(self):
@@ -236,16 +217,15 @@ class InstaxBLE:
             return
         if self.peripheral:
             if self.peripheral.is_connected():
-                # if len(self.packetsForPrinting) > 0 and not self.cancelled:
-                #     self.log('sending cancel command')
-                #     self.send_packet(self.create_packet(EventType.PRINT_IMAGE_DOWNLOAD_CANCEL))
+                if self.jobRunner.is_print_image_processing():
+                    self.log("Print Image is processing.... Try to cancel Print Image job")
+                    self.cancel_print()
+
                 self.log('Disconnecting...')
                 self.peripheral.disconnect()
                 self.log("Disconnected")
 
     def cancel_print(self):
-        self.packetsForPrinting = []
-        self.waitingForResponse = False
         self.send_packet(self.create_packet(EventType.PRINT_IMAGE_DOWNLOAD_CANCEL))
 
     def enable_printing(self):
@@ -260,33 +240,28 @@ class InstaxBLE:
         """" Scan for our device and return it when found """
         self.log('Searching for instax printer...')
         secondsTried = 0
-        try:
-            while True:
-                self.adapter.scan_for(2000)
-                peripherals = self.adapter.scan_get_results()
-                peripherals2 = self.adapter.get_paired_peripherals()
-                for peripheral in peripherals:
-                    foundName = peripheral.identifier()
-                    foundAddress = peripheral.address()
-                    # if foundName.startswith('INSTAX'):
-                    #     self.log(f"Found: {foundName} [{foundAddress}]")
-                    if (self.deviceName and foundName.startswith(self.deviceName)) or \
-                       (self.deviceAddress and foundAddress == self.deviceAddress) or \
-                       (self.deviceName is None and self.deviceAddress is None and
-                       foundName.startswith('INSTAX-') and foundName.endswith('(IOS)')):
-                        # if foundAddress.startswith('FA:AB:BC'):  # start of IOS endpooint
-                        #     to convert to ANDROID endpoint, replace 'FA:AB:BC' with '88:B4:36')
-                        if peripheral.is_connectable():
-                            return peripheral
-                        elif not self.quiet:
-                            self.log(f"Can't connect to printer at {foundAddress}")
-                secondsTried += 2
-                if timeout != 0 and secondsTried >= timeout:
-                    return None
-        except KeyboardInterrupt:
-            self.cancel_print()
-            self.disconnect()
-            sys.exit()
+        while True:
+            self.adapter.scan_for(2000)
+            peripherals = self.adapter.scan_get_results()
+            peripherals2 = self.adapter.get_paired_peripherals()
+            for peripheral in peripherals:
+                foundName = peripheral.identifier()
+                foundAddress = peripheral.address()
+                # if foundName.startswith('INSTAX'):
+                #     self.log(f"Found: {foundName} [{foundAddress}]")
+                if (self.deviceName and foundName.startswith(self.deviceName)) or \
+                        (self.deviceAddress and foundAddress == self.deviceAddress) or \
+                        (self.deviceName is None and self.deviceAddress is None and
+                         foundName.startswith('INSTAX-') and foundName.endswith('(IOS)')):
+                    # if foundAddress.startswith('FA:AB:BC'):  # start of IOS endpooint
+                    #     to convert to ANDROID endpoint, replace 'FA:AB:BC' with '88:B4:36')
+                    if peripheral.is_connectable():
+                        return peripheral
+                    elif not self.quiet:
+                        self.log(f"Can't connect to printer at {foundAddress}")
+            secondsTried += 2
+            if timeout != 0 and secondsTried >= timeout:
+                return None
 
     def create_color_payload(self, colorArray, speed, repeat, when):
         """
@@ -340,47 +315,24 @@ class InstaxBLE:
                 self.log("peripheral not connected")
 
         try:
-            i = 0
-            self.log(f"before sleep {i}")
-            while self.waitingForResponse and not self.dummyPrinter and not self.cancelled:
-                i += 1
-                self.log(f"sleep {i}")
-                # sleep(0.05)
-                sleep(0.5)
-
             header, length, op1, op2 = unpack_from('>HHBB', packet)
             try:
                 event = EventType((op1, op2))
             except Exception:
                 event = 'Unknown event'
 
-            # self.log(f'sending eventtype: {event}')
-
-            self.waitingForResponse = True
             smallPacketSize = 182
             numberOfParts = ceil(len(packet) / smallPacketSize)
-            # self.log(f"> number of parts to send: {numberOfParts}")
             for subPartIndex in range(numberOfParts):
-                # self.log((subPartIndex + 1), '/', numberOfParts)
                 subPacket = packet[subPartIndex * smallPacketSize:subPartIndex * smallPacketSize + smallPacketSize]
 
                 if not self.dummyPrinter:
                     self.peripheral.write_command(self.serviceUUID, self.writeCharUUID, subPacket)
 
-        except KeyboardInterrupt:
-            self.cancelled = True
-            self.cancel_print()
-            # sleep(1)
-            self.disconnect()
-            sys.exit('Cancelled')
         except Exception as e:
-            self.cancelled = True
-            self.cancel_print()
-            # sleep(1)
-            self.disconnect()
             self.log(f"raised exception: {e}")
 
-    def print_image(self, imgSrc):
+    async def print_image(self, imgSrc):
         """
         print an image. Either pass a path to an image (as a string) or pass
         the bytearray to print directly
@@ -399,8 +351,7 @@ class InstaxBLE:
             image = Image.open(imgSrc)
             imgData = self.pil_image_to_bytes(image, max_size_kb=105)
 
-        # self.log(f"len of imagedata: {len(imgData)}")
-        self.packetsForPrinting = [
+        packets = [
             self.create_packet(EventType.PRINT_IMAGE_DOWNLOAD_START, b'\x02\x00\x00\x00' + pack('>I', len(imgData)))
         ]
 
@@ -412,30 +363,17 @@ class InstaxBLE:
         # create a packet from each of our chunks, this includes adding the chunk number
         for index, chunk in enumerate(imgDataChunks):
             imgDataChunks[index] = pack('>I', index) + chunk  # add chunk number as int (4 bytes)
-            self.packetsForPrinting.append(self.create_packet(EventType.PRINT_IMAGE_DOWNLOAD_DATA, imgDataChunks[index]))
+            packets.append(self.create_packet(EventType.PRINT_IMAGE_DOWNLOAD_DATA, imgDataChunks[index]))
 
-        self.packetsForPrinting.append(self.create_packet(EventType.PRINT_IMAGE_DOWNLOAD_END))
+        packets.append(self.create_packet(EventType.PRINT_IMAGE_DOWNLOAD_END))
 
         if self.printEnabled:
-            self.packetsForPrinting.append(self.create_packet(EventType.PRINT_IMAGE))
-            # self.packetsForPrinting.append(self.create_packet((0, 2), b'\x02'))
+            packets.append(self.create_packet(EventType.PRINT_IMAGE))
         elif not self.quiet:
             self.log("Printing is disabled, sending all packets except the actual print command")
 
-        # for packet in self.packetsForPrinting:
-        #     self.log(self.prettify_bytearray(packet))
-        # exit()
-        # send the first packet from our list, the packet handler will take care of the rest
-        if not self.dummyPrinter:
-            packet = self.packetsForPrinting.pop(0)
-            self.send_packet(packet)
-            # try:
-            #     while len(self.packetsForPrinting) > 0:
-            #         sleep(0.1)
-            # except KeyboardInterrupt:
-            #     self.cancelled = True
-            #     self.disconnect()
-            #     sys.exit('Cancelled')
+        fallback_packet = self.create_packet(EventType.PRINT_IMAGE_DOWNLOAD_CANCEL)
+        await self.jobRunner.push_job(JobType.PRINT_IMAGE, packets, fallback_packet= fallback_packet)
 
     def print_services(self):
         """ Get and display and overview of the printer's services and characteristics """
@@ -454,25 +392,26 @@ class InstaxBLE:
         packet = self.create_packet(EventType.XYZ_AXIS_INFO)
         self.send_packet(packet)
 
-    def get_printer_status(self):
+    def get_printer_status_packet(self):
+        return self.create_packet(EventType.SUPPORT_FUNCTION_INFO, pack('>B', InfoType.PRINTER_FUNCTION_INFO.value))
+
+    async def get_printer_status(self):
         """ Get the printer's status"""
-        packet = self.create_packet(EventType.SUPPORT_FUNCTION_INFO, pack('>B', InfoType.PRINTER_FUNCTION_INFO.value))
-        self.send_packet(packet)
+        packets = [self.get_printer_status_packet()]
+        await self.jobRunner.push_job(JobType.GET_PRINTER_STATUS, packets)
 
-    def get_printer_info(self):
+    async def get_printer_info(self):
         """ Get and display the printer's status and info, like photos left and battery level """
-        # self.log("Getting function info...")
+        if not self.jobRunner.is_queue_empty():
+            self.log('Skipped to get printer info because job runner is busy')
+            return
 
-        packet = self.create_packet(EventType.SUPPORT_FUNCTION_INFO, pack('>B', InfoType.IMAGE_SUPPORT_INFO.value))
-        self.send_packet(packet)
-
-        packet = self.create_packet(EventType.SUPPORT_FUNCTION_INFO, pack('>B', InfoType.BATTERY_INFO.value))
-        self.send_packet(packet)
-        #
-        # packet = self.create_packet(EventType.AUTO_SLEEP_SETTINGS)
-        # self.send_packet(packet)
-
-        self.get_printer_status()
+        packets = [
+            self.create_packet(EventType.SUPPORT_FUNCTION_INFO, pack('>B', InfoType.IMAGE_SUPPORT_INFO.value)),
+            self.create_packet(EventType.SUPPORT_FUNCTION_INFO, pack('>B', InfoType.BATTERY_INFO.value)),
+            self.get_printer_status_packet()
+        ]
+        await self.jobRunner.push_job(JobType.GET_PRINTER_INFO, packets)
 
     def pil_image_to_bytes(self, img: Image.Image, max_size_kb: int = None) -> bytearray:
         """ Convert a PIL image to a bytearray """
@@ -531,7 +470,6 @@ class InstaxBLE:
         if not self.quiet:
             print(f"Waiting for {seconds} seconds...")
         sleep(seconds)
-
 
 def main(args={}):
     """ Example usage of the InstaxBLE class """

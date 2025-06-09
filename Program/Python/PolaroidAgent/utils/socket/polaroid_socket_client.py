@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 
@@ -13,9 +14,9 @@ from utils.socket.base_socket_client import BaseSocketClient
 
 
 class PolaroidSocketClient(BaseSocketClient):
-    def __init__(self):
+    def __init__(self, instax):
         super().__init__(host=SOCKET_HOST, port=SOCKET_PORT)
-        self.instax = InstaxBLE(device_name=POLAROID_ID, verbose=True)
+        self.instax = instax
 
         self.message_func_map = {
             PACKET_TYPE.K2C_REQ_PRINTER_INFO: self.send_printer_info,
@@ -40,7 +41,7 @@ class PolaroidSocketClient(BaseSocketClient):
     def send_who_am_i(self, **kwargs):
         self.send_message(PACKET_TYPE.C2K_WHO_AM_I)
 
-    def send_printer_info(self, **kwargs):
+    async def send_printer_info(self, **kwargs):
         if 0 < len(self.instax.packetsForPrinting):
             self.log(f'Skipped to send printer info because it is printing now({len(self.instax.packetsForPrinting)} packets left)')
             return
@@ -48,23 +49,23 @@ class PolaroidSocketClient(BaseSocketClient):
         self.log('send printer info')
 
         if not self.instax.peripheral or not self.instax.peripheral.is_connected():
-            self.instax.connect(10)
+            await self.instax.connect(10)
 
         if self.instax.peripheral and self.instax.peripheral.is_connected():
-            self.instax.get_printer_info()
+            await self.instax.get_printer_info()
             self.send_message(PACKET_TYPE.C2K_PRINTER_INFO, PhotoCount=self.instax.photosLeft)
 
-    def print_photo(self, ImageUrl, RequestId, **kwargs):
+    async def print_photo(self, ImageUrl, RequestId, **kwargs):
         image_path = self.download_image(ImageUrl)
 
         if not self.instax.peripheral or not self.instax.peripheral.is_connected():
-            self.instax.connect(20)
+            await self.instax.connect(20)
 
         if self.instax.peripheral and self.instax.peripheral.is_connected():
             self.instax.enable_printing()
-            self.instax.print_image(image_path)
-            # self.instax.wait_seconds(30)
-            self.instax.wait_one_minute() # TODO 이거 어떻게 할지 생각해보자. 상태 관리를 해놓는것도 괜찮을듯
+            await self.instax.print_image(image_path)
+            await asyncio.sleep(60)
+
             self.send_message(PACKET_TYPE.C2K_RES_PRINT_PHOTO, PrintComplete=True, RequestId=RequestId)
         else:
             self.send_message(PACKET_TYPE.C2K_RES_PRINT_PHOTO, PrintComplete=False, RequestId=RequestId)
@@ -87,7 +88,7 @@ class PolaroidSocketClient(BaseSocketClient):
             if type not in self.message_func_map:
                 raise Exception(f"PacketType '{type}' does not exist in message func map")
 
-            self.message_func_map[type](**data)
+            asyncio.run(self.message_func_map[type](**data))
         except Exception as e:
             self.log(str(e))
 
