@@ -418,7 +418,7 @@ class InstaxBLE:
 
         if self.printEnabled:
             self.packetsForPrinting.append(self.create_packet(EventType.PRINT_IMAGE))
-            self.packetsForPrinting.append(self.create_packet((0, 2), b'\x02'))
+            # self.packetsForPrinting.append(self.create_packet((0, 2), b'\x02'))
         elif not self.quiet:
             self.log("Printing is disabled, sending all packets except the actual print command")
 
