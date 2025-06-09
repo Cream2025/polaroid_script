@@ -42,7 +42,7 @@ class PolaroidSocketClient(BaseSocketClient):
 
     def send_printer_info(self, **kwargs):
         if 0 < len(self.instax.packetsForPrinting):
-            self.log('Skipped to send printer info because it is printing now')
+            self.log(f'Skipped to send printer info because it is printing now({len(self.instax.packetsForPrinting)} packets left)')
             return
 
         self.log('send printer info')
