@@ -10,24 +10,31 @@ class JobType(Enum):
     PRINT_IMAGE = "PRINT_IMAGE"
 
 class Job:
-    def __init__(self, job_type, packets, fallback_packet):
+    def __init__(self, job_type, packets, fallback_packet, future):
         self.job_type = job_type
         self.packets = packets
         self.fallback_packet = fallback_packet
-        self.current_job = None
+        self.future = future
+        self.cancel_event = asyncio.Event()
 
 class InstaxJobRunner:
     def __init__(self, instax):
-        self.job_queue = asyncio.Queue()
-        self.packet_processed_event = asyncio.Event()
-        self.loop = asyncio.get_event_loop()
+        self.job_queue = None
+        self.loop = None
+        self.packet_processed_event = None
+        self.job_cancel_event = None
         self.instax = instax
+        self.current_job = None
 
     async def start(self):
+        self.job_queue = asyncio.Queue()
+        self.loop = asyncio.get_running_loop()
+        self.packet_processed_event = asyncio.Event()
+        self.job_cancel_event = asyncio.Event()
         asyncio.create_task(self.job_runner())
 
-    async def push_job(self, job_type, packets, fallback_packet=None):
-        await self.job_queue.put(Job(job_type, packets, fallback_packet))
+    async def push_job(self, job_type, packets, fallback_packet=None, future=None):
+        await self.job_queue.put(Job(job_type, packets, fallback_packet, future))
 
     async def job_runner(self):
         while True:
@@ -39,29 +46,39 @@ class InstaxJobRunner:
     async def process_job(self, job):
         self.log(f'process job "{job.job_type.value}" start')
         fallback_packet_sended = False
+        success = True
         self.current_job = job
         while job and 0 < len(job.packets):
             if len(job.packets) % 10 == 0:
                 self.log(f'job "{job.job_type.value}" packets left to send: {len(job.packets)}')
 
             packet = job.packets.pop(0)
-            failed = False
             try:
+                if job.cancel_event.is_set() and not fallback_packet_sended:
+                    raise asyncio.CancelledError('cancelled job')
+
                 self.send_packet(packet)
                 await asyncio.wait_for(self.packet_processed_event.wait(), timeout=5) # 5초 내에 응답 안오면 실패 처리
             except asyncio.TimeoutError:
                 self.log(f'job "{job.job_type.value}" is timeout')
-                failed = True
+                success = False
+            except asyncio.CancelledError:
+                self.log(f'job "{job.job_type.value}" is cancelled')
+                success = False
             except Exception as e:
                 self.log(f'job "{job.job_type.value}" raised exception: {e}')
-                failed = True
+                success = False
             finally:
                 self.packet_processed_event.clear()
                 # print image 같은 경우는 실패했을 시, download cancel packet을 보내줘야함
-                if failed and job.fallback_packet and not fallback_packet_sended:
+                if not success and job.fallback_packet and not fallback_packet_sended:
                     self.log(f'job "{job.job_type.value}" has fallback packet. try to send fallback packet')
                     job.packets = [job.fallback_packet]
                     fallback_packet_sended = True
+
+        if job.future and not job.future.done():
+            self.log(f'job "{job.job_type.value}" result: {success}')
+            job.future.get_loop().call_soon_threadsafe(job.future.set_result, success)
 
         self.current_job = None
         self.log(f'process job "{job.job_type.value}" end')
@@ -90,6 +107,9 @@ class InstaxJobRunner:
 
     def on_packet_processed(self):
         self.loop.call_soon_threadsafe(self.packet_processed_event.set)
+
+    def on_job_cancelled(self):
+        self.current_job.cancel_event.set()
 
     def is_queue_empty(self):
         return self.job_queue.empty()

@@ -57,10 +57,8 @@ class PolaroidSocketClient(BaseSocketClient):
 
         if self.instax.peripheral and self.instax.peripheral.is_connected():
             self.instax.enable_printing()
-            await self.instax.print_image(image_path)
-            await asyncio.sleep(60)
-
-            self.send_message(PACKET_TYPE.C2K_RES_PRINT_PHOTO, PrintComplete=True, RequestId=RequestId)
+            result = await self.instax.print_image(image_path)
+            self.send_message(PACKET_TYPE.C2K_RES_PRINT_PHOTO, PrintComplete=result, RequestId=RequestId)
         else:
             self.send_message(PACKET_TYPE.C2K_RES_PRINT_PHOTO, PrintComplete=False, RequestId=RequestId)
 

@@ -2,7 +2,6 @@
 import asyncio
 from math import ceil
 from struct import pack, unpack_from
-from time import sleep
 
 from utils.instax_ble.InstaxJobRunner import JobType
 
@@ -340,7 +339,7 @@ class InstaxBLE:
         self.log(f'printing image "{imgSrc}"')
         if self.photosLeft == 0 and not self.dummyPrinter:
             self.log("Can't print: no photos left")
-            return
+            return False
 
         imgData = imgSrc
         if isinstance(imgSrc, str):  # if it's a path, load the image contents
@@ -373,7 +372,16 @@ class InstaxBLE:
             self.log("Printing is disabled, sending all packets except the actual print command")
 
         fallback_packet = self.create_packet(EventType.PRINT_IMAGE_DOWNLOAD_CANCEL)
-        await self.jobRunner.push_job(JobType.PRINT_IMAGE, packets, fallback_packet= fallback_packet)
+        future = asyncio.get_running_loop().create_future()
+        await self.jobRunner.push_job(JobType.PRINT_IMAGE, packets, fallback_packet= fallback_packet, future=future)
+
+        try:
+            result = await asyncio.wait_for(future, 60)
+            return result
+        except asyncio.TimeoutError:
+            self.jobRunner.on_job_cancelled()
+            return False
+
 
     def print_services(self):
         """ Get and display and overview of the printer's services and characteristics """
@@ -459,18 +467,6 @@ class InstaxBLE:
 
         return bytearray(img_buffer.getvalue())
 
-    def wait_one_minute(self):
-        """ Wait for one minute. Hacky way of preventing disconnecting too soon """
-        if not self.quiet:
-            print("Waiting for one minute...")
-        sleep(60)
-
-    def wait_seconds(self, seconds):
-        """ Wait for one minute. Hacky way of preventing disconnecting too soon """
-        if not self.quiet:
-            print(f"Waiting for {seconds} seconds...")
-        sleep(seconds)
-
 def main(args={}):
     """ Example usage of the InstaxBLE class """
     instax = InstaxBLE(**args)
@@ -498,7 +494,6 @@ def main(args={}):
             instax.print_image(instax.image_path)
         else:
             instax.print_image(instax.printerSettings['exampleImage'])
-        instax.wait_one_minute()
 
     except Exception as e:
         print(type(e).__name__, __file__, e.__traceback__.tb_lineno)
