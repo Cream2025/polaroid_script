@@ -58,6 +58,9 @@ class PolaroidSocketClient(BaseSocketClient):
         if self.instax.peripheral and self.instax.peripheral.is_connected():
             self.instax.enable_printing()
             result = await self.instax.print_image(image_path)
+            if result:
+                # 출력하는데 걸리는 시간 이후 결과 보내기
+                await asyncio.sleep(16)
             self.send_message(PACKET_TYPE.C2K_RES_PRINT_PHOTO, PrintComplete=result, RequestId=RequestId)
         else:
             self.send_message(PACKET_TYPE.C2K_RES_PRINT_PHOTO, PrintComplete=False, RequestId=RequestId)
