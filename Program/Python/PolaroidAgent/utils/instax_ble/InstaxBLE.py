@@ -63,6 +63,7 @@ class InstaxBLE:
         self.imageSize = (PrinterSettings['mini']['width'], PrinterSettings['mini']['height']) if self.dummyPrinter else (0, 0)
 
         adapters = simplepyble.Adapter.get_adapters()
+        print(f"{len(adapters)} adapter(s) found.")
         if len(adapters) == 0:
             if not self.quiet:
                 sys.exit("No bluetooth adapters found (are they enabled?)")
@@ -70,7 +71,9 @@ class InstaxBLE:
                 sys.exit()
 
         for adapter in adapters:
-            if is_usb_adapter(adapter.identifier()):
+            adapter_id = adapter.identifier()
+            if is_usb_adapter(adapter_id):
+                print(f"{adapter_id} is USB adapter.")
                 self.adapter = adapter
                 break
 
