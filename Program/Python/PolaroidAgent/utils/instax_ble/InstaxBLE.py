@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
+import subprocess
 from math import ceil
 from struct import pack, unpack_from
 
@@ -68,10 +69,13 @@ class InstaxBLE:
             else:
                 sys.exit()
 
-        if len(adapters) > 1:
-            self.log(f"Found multiple adapters: {', '.join([adapter.identifier() for adapter in adapters])}")
-            self.log(f"Using the first one: {adapters[0].identifier()}")
-        self.adapter = adapters[0]
+        for adapter in adapters:
+            if is_usb_adapter(adapter.identifier()):
+                self.adapter = adapter
+                break
+
+        if not self.adapter:
+            sys.exit("No USB bluetooth adapters found (are they enabled?)")
 
     def set_job_runner(self, runner):
         self.jobRunner = runner
@@ -466,6 +470,16 @@ class InstaxBLE:
             img.save(img_buffer, format='JPEG')
 
         return bytearray(img_buffer.getvalue())
+
+def is_usb_adapter(adapter_id):
+    try:
+        output = subprocess.check_output(
+            ["udevadm", "info", f"/sys/class/bluetooth/{adapter_id}"],
+            stderr=subprocess.DEVNULL,
+        ).decode()
+        return "usb" in output.lower()
+    except subprocess.CalledProcessError:
+        return False
 
 def main(args={}):
     """ Example usage of the InstaxBLE class """
