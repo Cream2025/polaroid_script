@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
+import platform
 import subprocess
 from math import ceil
 from struct import pack, unpack_from
@@ -70,12 +71,16 @@ class InstaxBLE:
             else:
                 sys.exit()
 
-        for adapter in adapters:
-            adapter_id = adapter.identifier()
-            if is_usb_adapter(adapter_id):
-                print(f"{adapter_id} is USB adapter.")
-                self.adapter = adapter
-                break
+        system = platform.system()
+        if system == "Linux":
+            for adapter in adapters:
+                adapter_id = adapter.identifier()
+                if is_usb_adapter(adapter_id):
+                    print(f"{adapter_id} is USB adapter.")
+                    self.adapter = adapter
+                    break
+        elif system == "Windows":
+            self.adapter = adapters[0]
 
         if not self.adapter:
             sys.exit("No USB bluetooth adapters found (are they enabled?)")

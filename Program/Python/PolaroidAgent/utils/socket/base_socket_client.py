@@ -29,7 +29,7 @@ class BaseSocketClient:
                 self.connected = True
                 print(f"connected to {self.host}:{self.port}")
                 threading.Thread(target=self.handle_server, daemon=True).start()
-            except ConnectionRefusedError:
+            except Exception:
                 print("Connection Failed. Retrying to connect...")
                 time.sleep(5)
                 self.create_socket()
