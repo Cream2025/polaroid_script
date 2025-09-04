@@ -327,7 +327,7 @@ class InstaxBLE:
             except Exception:
                 event = 'Unknown event'
 
-            smallPacketSize = 182
+            smallPacketSize = 241
             numberOfParts = ceil(len(packet) / smallPacketSize)
             for subPartIndex in range(numberOfParts):
                 subPacket = packet[subPartIndex * smallPacketSize:subPartIndex * smallPacketSize + smallPacketSize]

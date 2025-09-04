@@ -92,7 +92,7 @@ class InstaxJobRunner:
                 self.log("peripheral not connected")
 
         try:
-            smallPacketSize = 182
+            smallPacketSize = 241
             numberOfParts = ceil(len(packet) / smallPacketSize)
             # self.log(f"> number of parts to send: {numberOfParts}")
             for subPartIndex in range(numberOfParts):
