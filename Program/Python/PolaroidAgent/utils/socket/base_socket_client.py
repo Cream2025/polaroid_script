@@ -25,7 +25,7 @@ class BaseSocketClient:
     def connect(self):
         while not self.connected:
             try:
-                self.socket.connect((self.host, self.port))
+                self.socket.connect((self.host, int(self.port)))
                 self.connected = True
                 print(f"connected to {self.host}:{self.port}")
                 threading.Thread(target=self.handle_server, daemon=True).start()
